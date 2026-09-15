@@ -341,14 +341,15 @@ cmake --build build
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Z3 is linked in, not loaded at run time: an installed one is used if
-`find_package(Z3 CONFIG)` finds it (`brew install z3`), and otherwise it is
-fetched and built here.
+Z3 is always fetched at a pinned version (`Z3_VERSION`, 5.1.0) and linked in
+statically, so the library is self-contained: an installed Z3 is neither
+needed nor used. The first build compiles Z3 and takes a while. Only the
+`fznso_z3_*` entry points are exported, so the embedded Z3 cannot bind against
+another Z3 loaded into the same process.
 
 The FZnSO name of a solver is its library's base name, so the result is
-`build/lib/fznso/<config>/libz3.dylib` — the same leaf as Z3's own shared
-library. The `fznso` directory keeps them apart; Z3's install name is
-`@rpath/libz3.5.1.dylib`, a different leaf, so there is no self-reference.
+`build/lib/fznso/<config>/libz3.dylib`, the same leaf as Z3's own shared
+library; the `fznso` directory keeps them apart.
 
 ## Options
 

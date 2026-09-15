@@ -10,24 +10,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Z3, linked in rather than dlopened. An installed one is used if there is one;
-# otherwise it is fetched and built here, so a checkout needs nothing beyond a
-# compiler and a network. Building Z3 from source takes a while, so an installed
-# one is worth having (`brew install z3`).
-set(Z3_VERSION "5.1.0" CACHE STRING "Z3 version to fetch when none is installed")
-find_package(Z3 ${Z3_VERSION} CONFIG QUIET)
-if(NOT Z3_FOUND)
-  include(FetchContent)
-  set(Z3_BUILD_LIBZ3_SHARED OFF)
-  set(Z3_BUILD_TEST_EXECUTABLES OFF)
-  set(Z3_BUILD_EXECUTABLE OFF)
-  set(Z3_ENABLE_EXAMPLE_TARGETS OFF)
-  FetchContent_Declare(z3
-    GIT_REPOSITORY https://github.com/Z3Prover/z3.git
-    GIT_TAG "z3-${Z3_VERSION}"
-    GIT_SHALLOW ON)
-  FetchContent_MakeAvailable(z3)
-endif()
+# Z3, always fetched at a pinned version and linked in statically, so the
+# solver library is self-contained: it neither depends on nor picks up whatever
+# Z3 happens to be installed. Building Z3 from source takes a while, once.
+set(Z3_VERSION "5.1.0" CACHE STRING "Z3 version to fetch and link in")
+include(FetchContent)
+set(Z3_BUILD_LIBZ3_SHARED OFF)
+set(Z3_BUILD_TEST_EXECUTABLES OFF)
+set(Z3_BUILD_EXECUTABLE OFF)
+set(Z3_ENABLE_EXAMPLE_TARGETS OFF)
+FetchContent_Declare(z3
+  GIT_REPOSITORY https://github.com/Z3Prover/z3.git
+  GIT_TAG "z3-${Z3_VERSION}"
+  GIT_SHALLOW ON)
+FetchContent_MakeAvailable(z3)
+# Z3's own build names its library `libz3`; only an installed Z3 exports the
+# namespaced target.
+add_library(z3::libz3 ALIAS libz3)
 
 # The solver itself. One target: unlike `fznso-mip`, there is no second backend
 # to share a core with, so a separate object library would be scaffolding for a
@@ -50,12 +49,21 @@ set_target_properties(fznso-z3 PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
   LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib/fznso")
+# The statically linked Z3 is built with default visibility, so without this its
+# whole API would be exported too, and could bind against another Z3 loaded into
+# the same process. Only the entry points leave the library.
+if(APPLE)
+  target_link_options(fznso-z3 PRIVATE "LINKER:-exported_symbol,_fznso_z3_*")
+elseif(UNIX)
+  file(WRITE "${PROJECT_BINARY_DIR}/fznso-z3.map" "{ global: fznso_z3_*; local: *; };\n")
+  target_link_options(fznso-z3 PRIVATE "LINKER:--version-script=${PROJECT_BINARY_DIR}/fznso-z3.map")
+endif()
 
 # `z3++.h` is not warning-clean under `-Wall -Wextra`, and it is not ours to fix.
+# Z3's build tree only exposes its C API headers; the C++ wrapper sits beside
+# them.
 get_target_property(Z3_INCLUDES z3::libz3 INTERFACE_INCLUDE_DIRECTORIES)
-if(Z3_INCLUDES)
-  target_include_directories(fznso-z3 SYSTEM PRIVATE ${Z3_INCLUDES})
-endif()
+target_include_directories(fznso-z3 SYSTEM PRIVATE ${Z3_INCLUDES} "${z3_SOURCE_DIR}/src/api/c++")
 
 # The self-test loads a built library the way a consumer does, so it exercises
 # the entry-point naming and the export path as well as the behaviour. It also
