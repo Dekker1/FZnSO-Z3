@@ -66,8 +66,36 @@ private:
 	/// container so an earlier read survives a later one.
 	fznso::Value cached(const std::string& name, fznso::OwnedValue value) const;
 
+	// The engine the current layer stack lives in. `Z3_optimize` is only used
+	// when the model has an objective, because its `check` is not incremental:
+	// it allocates a fresh solver, re-imports every hard constraint and re-runs
+	// its own preprocessing pipeline (`dt2bv`, `lia2card`, `eq2bv`) every time,
+	// so a re-check of an unchanged model costs as much as the first one. A
+	// `Z3_solver` keeps its state across `check`, which is what the layers are
+	// for. Measured on one `gbac` instance, re-checking an unchanged model:
+	// 213 ms through the optimiser against 12 ms through a solver, and 20
+	// neighbourhoods of `reduced_UD4-gbac` in 1.4 s against 170.6 s.
+	//
+	// What this costs is worth saying out loud: the optimiser's preprocessing
+	// (`eq2bv`, `lia2card`) bit-blasts a bounded-integer model into a shape far
+	// better suited to Z3, and a plain solver never gets it. On
+	// `radiation/m12_10_20` the optimiser finds a first solution in 12.7 s where
+	// the solver finds none in 120 s. The answer to that is a finite-domain
+	// encoding in the translator, not a non-incremental engine here.
+	void engine_push() { layers_in_opt_ ? opt_.push() : sol_.push(); }
+	void engine_pop() { layers_in_opt_ ? opt_.pop() : sol_.pop(); }
+	void engine_add(const z3::expr& e) { layers_in_opt_ ? opt_.add(e) : sol_.add(e); }
+	z3::check_result engine_check() { return layers_in_opt_ ? opt_.check() : sol_.check(); }
+	z3::model engine_model() { return layers_in_opt_ ? opt_.get_model() : sol_.get_model(); }
+
 	z3::context ctx_;
 	z3::optimize opt_;
+	// `Z3_mk_simple_solver` rather than `Z3_mk_solver`: the latter is a combined
+	// solver that runs the strategic tactic until the first `push` and then hands
+	// over, which costs more than it saves in a workload that is incremental by
+	// construction (2.1 s against 0.6 s per re-check on `UD2-gbac`).
+	z3::solver sol_;
+	bool layers_in_opt_ = false;
 	Translate translate_;
 	Options options_;
 

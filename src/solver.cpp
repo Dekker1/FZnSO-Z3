@@ -88,7 +88,7 @@ bool is_number(const z3::expr& e) { return e.is_numeral(); }
 } // namespace
 
 Z3Solver::Z3Solver()
-	: ctx_(), opt_(ctx_), translate_(ctx_, FloatEncoding::Fpa) {}
+	: ctx_(), opt_(ctx_), sol_(ctx_, z3::solver::simple()), translate_(ctx_, FloatEncoding::Fpa) {}
 
 // ---------------------------------------------------------------------------
 // Options
@@ -226,7 +226,7 @@ fznso::Value Z3Solver::statistic(std::string_view name) const {
 		if (name != entry.first) {
 			continue;
 		}
-		z3::stats s = opt_.statistics();
+		z3::stats s = layers_in_opt_ ? opt_.statistics() : sol_.statistics();
 		for (unsigned i = 0; i < s.size(); i++) {
 			if (s.key(i) != entry.second) {
 				continue;
@@ -247,7 +247,7 @@ fznso::Value Z3Solver::statistic(std::string_view name) const {
 
 void Z3Solver::forget_layers() {
 	while (posted_layers_ > 0) {
-		opt_.pop();
+		engine_pop();
 		posted_layers_--;
 	}
 	decision_end_.clear();
@@ -267,7 +267,7 @@ std::size_t Z3Solver::post_layers(const fznso::Model& model, fznso::MessageSink&
 	const std::size_t keep = std::min(model.layer_unchanged(), std::min(posted_layers_, layers));
 
 	while (posted_layers_ > keep) {
-		opt_.pop();
+		engine_pop();
 		posted_layers_--;
 	}
 	// A Z3 constant outlives the scope its assertions were made in, so this is
@@ -279,7 +279,7 @@ std::size_t Z3Solver::post_layers(const fznso::Model& model, fznso::MessageSink&
 
 	std::size_t posted = 0;
 	for (std::size_t l = keep; l < layers; l++) {
-		opt_.push();
+		engine_push();
 		// From here to the end of the iteration the Z3 scope stack is one deeper
 		// than `posted_layers_` records. Anything that throws in between — an
 		// identifier this solver does not implement is the ordinary case — would
@@ -289,7 +289,7 @@ std::size_t Z3Solver::post_layers(const fznso::Model& model, fznso::MessageSink&
 		try {
 			post_layer(model, messages, l);
 		} catch (...) {
-			opt_.pop();
+			engine_pop();
 			throw;
 		}
 		decision_end_.push_back(model.decision_layer_end(l));
@@ -317,11 +317,11 @@ void Z3Solver::post_layer(const fznso::Model& model, fznso::MessageSink& message
 		for (std::size_t d = first_decision; d < last_decision; d++) {
 			std::optional<z3::expr> domain = translate_.add_decision(model, fznso::Decision{d});
 			if (domain.has_value()) {
-				opt_.add(*domain);
+				engine_add(*domain);
 			}
 		}
 		for (std::size_t c = first_constraint; c < last_constraint; c++) {
-			opt_.add(translate_.assertion(model, fznso::Constraint{c}));
+			engine_add(translate_.assertion(model, fznso::Constraint{c}));
 		}
 
 		if (messages.wanted()) {
@@ -359,6 +359,12 @@ fznso::Status Z3Solver::run(const fznso::Model& model, fznso::SolutionSink& solu
 	}
 	have_objective_ = objective->mode != Mode::None;
 	float_objective_ = objective->floating;
+	// The layer stack lives in one engine, so a model that gained or lost its
+	// objective since the last run starts over in the other one.
+	if (have_objective_ != layers_in_opt_) {
+		forget_layers();
+		layers_in_opt_ = have_objective_;
+	}
 
 	try {
 		layers_posted_ = static_cast<std::int64_t>(post_layers(model, messages));
@@ -391,16 +397,16 @@ fznso::Status Z3Solver::run(const fznso::Model& model, fznso::SolutionSink& solu
 	} else if (objective->mode == Mode::Lex) {
 		params.set("priority", ctx_.str_symbol("lex"));
 	}
-	opt_.set(params);
+	layers_in_opt_ ? opt_.set(params) : sol_.set(params);
 
 	// Everything a *run* adds — the objective, its side conditions, and the
 	// blocking clauses of an enumeration — goes in one scope of its own, so that
 	// none of it leaks into the layer state the next run reuses.
-	opt_.push();
+	engine_push();
 	struct PopGuard {
-		z3::optimize& opt;
-		~PopGuard() { opt.pop(); }
-	} guard{opt_};
+		Z3Solver& self;
+		~PopGuard() { self.engine_pop(); }
+	} guard{*this};
 
 	auto solve_started = std::chrono::steady_clock::now();
 	bool stopped = false;
@@ -501,14 +507,14 @@ fznso::Status Z3Solver::run(const fznso::Model& model, fznso::SolutionSink& solu
 				report(opt_.get_model(), fznso::OwnedValue{});
 			}
 		} else {
-			z3::check_result result = opt_.check();
+			z3::check_result result = engine_check();
 			if (result == z3::unknown && !stop.requested()) {
 				// A limit, not a failure: the search stopped without proving
 				// anything either way.
 				stopped = true;
 			}
 			if (result == z3::sat) {
-				z3::model found = opt_.get_model();
+				z3::model found = engine_model();
 				fznso::OwnedValue value;
 				if (objective->mode == Mode::Single && !handles.empty()) {
 					z3::expr bound = objective->maximise ? opt_.upper(handles.front())
@@ -577,11 +583,11 @@ fznso::Status Z3Solver::run(const fznso::Model& model, fznso::SolutionSink& solu
 					// available".
 					z3::model current = found;
 					while (!stopped) {
-						opt_.add(translate_.blocking_clause(current, wanted));
-						if (opt_.check() != z3::sat) {
+						engine_add(translate_.blocking_clause(current, wanted));
+						if (engine_check() != z3::sat) {
 							break;
 						}
-						current = opt_.get_model();
+						current = engine_model();
 						report(current, value);
 					}
 				}
