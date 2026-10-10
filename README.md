@@ -38,11 +38,11 @@ global that would need an auxiliary variable is left to the library however easy
 it would be to write, because a declaration MiniZinc believes and the solver
 cannot honour is worse than no declaration at all.
 
-## Layers are Z3 assertion scopes
+## Layers are Z3 assertion scopes, above the first one
 
 `layer_unchanged()` says how much of the model the solver has already seen. Z3
-has assertion levels natively, so the mapping is direct: **one `Z3_optimize`
-scope per model layer**, and the solver keeps that stack between runs.
+has assertion levels natively, so the mapping is nearly direct: **one scope per
+model layer above layer 0**, and the solver keeps that stack between runs.
 
 ```
 keep = min( layer_unchanged(), min(posted_layers, layer_count()) )
@@ -55,39 +55,105 @@ one and mark it permanent before the next run. Clamping by `posted_layers` and
 `layer_count()` is what makes *popping* free: a model that shrank drops the
 surplus scopes and posts nothing at all.
 
+### Layer 0 is asserted at the base level
+
+Not for tidiness — because of what Z3 does with an open assertion level. Z3
+applies the reductions that *eliminate* things only while it is at the base
+level, since a pop could not undo them, and a single open scope is what tells it
+to treat the problem as incremental and stop trying. So the depth at which a
+model is first checked changes how Z3 attacks it, and not by a little. The same
+assertions handed to a `Z3_solver`, checked at the base level and checked one
+level up:
+
+| | `radiation/m12_10_20`, first solution |
+| --- | --- |
+| base level | **1.3s** |
+| one scope deep | none in 40s |
+
+Layer 0 is the one layer that always arrives in a single batch, and the one
+layer that nothing can retract on its own, so it is the one layer that can have
+the base level. Two consequences follow:
+
+- **Retracting layer 0 is not a pop.** It has no scope, so `keep == 0` with
+  something posted replaces the engine instead. Dropping every layer means
+  starting again, which is the honest reading anyway.
+- **A run gets a scope only if it has something to put in it.** The objective,
+  its side conditions and an enumeration's blocking clauses are the only things
+  a run adds, so a satisfaction run that wants one solution pushes nothing: an
+  empty scope is not free here, it would cost a single-layer model its base
+  level.
+
 A Z3 constant outlives the scope its assertions were made in, so popping a scope
 is not enough to forget a layer's decisions — the solver truncates its own
 `vars_` too. Global indices follow layer order, which is what makes a truncation
 correct.
-
-Everything a *run* adds — the objective, its side conditions, the blocking
-clauses of an enumeration — goes in one further scope pushed and popped around
-the run, so none of it leaks into the layer state the next run reuses.
 
 The `z3_layers_posted` statistic reports how many layers the last run had to
 post. **Zero means the whole model was reused**, and that is the only direct
 evidence that incrementality is working: a solver that quietly rebuilt
 everything would give the same answers. The self-test asserts on it.
 
-### What it is actually worth
+## Which engine holds the layers
 
-Measured on 25 000 decisions and ~50 000 constraints, solved once and then
-re-solved ten times with one more constraint each time — layers reused, against
-the fresh instance a consumer without them would create:
+`Z3_optimize` **only when the model has an objective.** Otherwise the layers
+live in a `Z3_mk_simple_solver`, because `Z3_optimize_check` is not incremental
+and the layers exist to be reused:
 
-| | posting | wall clock |
+- `Z3_optimize_push` does not push on the underlying solver. It records the
+  lengths of a few vectors.
+- Every `Z3_optimize_check` runs `clear_state(); init_solver();
+  import_scoped_state(); normalize(); internalize()` — a freshly allocated
+  `opt_solver`, every hard constraint re-asserted, the whole
+  `simplify → propagate-values → solve-eqs → dt2bv → lia2card → eq2bv`
+  pipeline re-run.
+
+So re-checking a model that did not change costs what the first check cost:
+
+| re-check, unchanged model | `reduced_UD4-gbac` | `radiation/01` | `UD2-gbac` |
+| --- | --- | --- | --- |
+| `Z3_optimize` | 213ms | 612ms | never, in 20s |
+| `Z3_mk_simple_solver` | **12ms** | **65ms** | **623ms** |
+
+End to end, through this interface, on the benchmark instances — a fixed count
+of neighbourhoods, so the measurement is the time that count took:
+
+| | optimiser | solver |
 | --- | --- | --- |
-| layers reused | **0.13s** | 18.90s |
-| fresh instance each time | 1.39s | 19.95s |
+| `reduced_UD4-gbac`, 20 neighbourhoods | 170.6s, 16 of 21 searches hit the limit | **7.2s, none did** |
+| `UD2-gbac`, 20 neighbourhoods | no first solution in 60s | **first at 18.4s, 21 searches in 139s** |
+| `steelmillslab/bench_13_0`, first solution | none in 60s | **26.2s** |
+| `zt_2_20_1`, the 7-point Pareto front | 2.0s | **1.3s** |
 
-**Translation cost drops by a factor of ten**, which is exactly the claim the
-layer mechanism makes and the thing it is designed to remove. End to end the
-win is only about 5%, because Z3 re-solves the formula from scratch on every
-`check()` and search dominates here. So the honest summary is: layers deliver
-what they promise — re-translation stops being paid for — and how much that is
-worth depends entirely on a model's translation-to-search ratio. A consumer
-that adds a constraint to a large model and re-solves cheaply is the case that
-benefits; one whose search dwarfs its translation will barely notice.
+`Z3_mk_simple_solver` rather than `Z3_mk_solver`: the latter is a combined
+solver that runs the strategic tactic until the first `push` and then hands over
+to the incremental kernel. Its first check is much the better one — 2.2s to a
+first solution on `UD2-gbac` against 18s — but after the handover it stops
+honouring `timeout`, and a 20-neighbourhood run with a 260s budget was still
+going after 39 minutes. A solver that ignores the time limit cannot be the
+default behind `--time-limit`.
+
+### What the layers are actually worth
+
+Posting stops being paid for. On a synthetic model of 25 000 decisions and
+~50 000 constraints, re-solved ten times with one more constraint each time,
+translation cost drops from 1.39s to **0.13s** against the fresh instance a
+consumer without layers would build — a factor of ten, which is exactly the
+claim the mechanism makes.
+
+What that is worth end to end depends entirely on a model's
+translation-to-search ratio, and this backend is the case where the ratio is
+unkind: search dominates, so removing re-translation is a few percent. The
+large end-to-end numbers above are not the layer mechanism at all, they are the
+engine. Worth keeping the two apart.
+
+There is a real cost to being incremental here, and it is not preprocessing:
+with its preprocessing switched off entirely (`opt.elim_01=false
+opt.incremental=true`) the optimiser still finds `radiation/m12_10_20`'s first
+solution in 8.6s, where a solver holding the same assertions finds none in 60s
+at six random seeds. What the non-incremental path has is the whole formula set
+in one batch when it configures itself. Layer 0 at the base level is as much of
+that as an incremental interface can offer, and it is available exactly once:
+the search after it, with a bound layer pushed, is back to timing out.
 
 To measure against a non-incremental baseline, `set_unchanged(0)` before each
 run: every layer is rebuilt, permanent or not.
@@ -314,7 +380,7 @@ Measured against Gecode over the 1088 models in `tests/spec/unit`, with
 | self-test (`ctest`) | 21 groups, including layers, `mark_permanent`/`mark_redundant`, lexicographic and Pareto objectives, unbounded integers, and both float encodings |
 | `fznso-conform` | 131 constraints, 10 objectives — all conform |
 | compile sweep | **14** models only this path fails, **0** without a diagnostic. All 14 are `on_restart` or `blackbox`; HiGHS fails on the same 14 |
-| `check-semantics` | **220 passed, 0 differing** |
+| `check-semantics` | **223 passed, 1 differing** — and the one is the suite's own gap, not an answer: `value_precede_chain minimize` has several optima at objective 0, so `[1,4,4,4]` here and `[1,1,1,1]` there are both right |
 | solutions vs Gecode | identical 688, equivalent 138, **differing 21**, skipped 241 |
 
 Every one of the 21 is accounted for, and **none is a wrong answer**:

@@ -53,6 +53,11 @@ private:
 	/// Drop every layer, so the next run posts the model from scratch.
 	void forget_layers();
 
+	/// Replace the engine with a fresh one, dropping every assertion and every
+	/// scope. This is how layer 0 is retracted: it is asserted at the base level
+	/// and so has no scope of its own to be popped out of.
+	void reset_engine();
+
 	/// Bring the Z3 assertion stack into line with `model`'s layers, posting
 	/// only what is above the last unchanged one. Returns how many layers were
 	/// posted — zero meaning the whole model was reused.
@@ -76,12 +81,14 @@ private:
 	// 213 ms through the optimiser against 12 ms through a solver, and 20
 	// neighbourhoods of `reduced_UD4-gbac` in 1.4 s against 170.6 s.
 	//
-	// What this costs is worth saying out loud: the optimiser's preprocessing
-	// (`eq2bv`, `lia2card`) bit-blasts a bounded-integer model into a shape far
-	// better suited to Z3, and a plain solver never gets it. On
-	// `radiation/m12_10_20` the optimiser finds a first solution in 12.7 s where
-	// the solver finds none in 120 s. The answer to that is a finite-domain
-	// encoding in the translator, not a non-incremental engine here.
+	// What this costs is worth saying out loud, because it is not preprocessing.
+	// Throwing the solver away is also how the optimiser hands Z3 the whole
+	// formula set in one batch, and the smt kernel is far better on these models
+	// when it configures itself from everything at once than when it is fed one
+	// assertion at a time: on `radiation/m12_10_20` the optimiser finds a first
+	// solution in 9.4 s — 8.6 s with its preprocessing switched off entirely —
+	// where a solver holding the same assertions finds none in 60 s at six
+	// random seeds. Nothing incremental recovers that. See the README.
 	void engine_push() { layers_in_opt_ ? opt_.push() : sol_.push(); }
 	void engine_pop() { layers_in_opt_ ? opt_.pop() : sol_.pop(); }
 	void engine_add(const z3::expr& e) { layers_in_opt_ ? opt_.add(e) : sol_.add(e); }

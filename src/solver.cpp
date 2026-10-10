@@ -245,11 +245,17 @@ fznso::Value Z3Solver::statistic(std::string_view name) const {
 // Layers
 // ---------------------------------------------------------------------------
 
-void Z3Solver::forget_layers() {
-	while (posted_layers_ > 0) {
-		engine_pop();
-		posted_layers_--;
+void Z3Solver::reset_engine() {
+	if (layers_in_opt_) {
+		opt_ = z3::optimize(ctx_);
+	} else {
+		sol_ = z3::solver(ctx_, z3::solver::simple());
 	}
+	posted_layers_ = 0;
+}
+
+void Z3Solver::forget_layers() {
+	reset_engine();
 	decision_end_.clear();
 	layer_nonlinear_.clear();
 	translate_.reset(options_.float_encoding);
@@ -266,7 +272,14 @@ std::size_t Z3Solver::post_layers(const fznso::Model& model, fznso::MessageSink&
 	// shrank drops the surplus scopes and posts nothing.
 	const std::size_t keep = std::min(model.layer_unchanged(), std::min(posted_layers_, layers));
 
+	if (keep == 0 && posted_layers_ > 0) {
+		// Retracting layer 0 is not a pop: it has no scope. Every layer goes, so
+		// the engine goes.
+		reset_engine();
+	}
 	while (posted_layers_ > keep) {
+		// `posted_layers_ - 1` is at least 1 here, because `keep == 0` was dealt
+		// with above, so the layer being dropped does have a scope of its own.
 		engine_pop();
 		posted_layers_--;
 	}
@@ -279,17 +292,34 @@ std::size_t Z3Solver::post_layers(const fznso::Model& model, fznso::MessageSink&
 
 	std::size_t posted = 0;
 	for (std::size_t l = keep; l < layers; l++) {
-		engine_push();
+		// Layer 0 is asserted at the base level, with no scope of its own, and
+		// that is a Z3 fact rather than a tidiness one: Z3 decides how to attack a
+		// problem from what it holds when it first checks, and an open assertion
+		// level tells it the problem is incremental. A model asserted at the base
+		// level goes to the strategic solver; the same assertions one level up go
+		// to the plain incremental kernel. On `radiation/m12_10_20` that is a
+		// first solution in 1.3 s against none in 40 s. Layer 0 is the one layer
+		// that always arrives in a single batch, so it is the one layer that can
+		// have it.
+		if (l > 0) {
+			engine_push();
+		}
 		// From here to the end of the iteration the Z3 scope stack is one deeper
 		// than `posted_layers_` records. Anything that throws in between — an
 		// identifier this solver does not implement is the ordinary case — would
 		// otherwise leave that scope behind holding half a layer, and the next
 		// run would post on top of it. Popping it here is what keeps the two in
-		// step, so a failed run leaves the solver exactly as it found it.
+		// step, so a failed run leaves the solver exactly as it found it. Layer 0
+		// has no scope, so what a failure leaves behind is assertions at the base
+		// level, and the engine is replaced instead.
 		try {
 			post_layer(model, messages, l);
 		} catch (...) {
-			engine_pop();
+			if (l > 0) {
+				engine_pop();
+			} else {
+				reset_engine();
+			}
 			throw;
 		}
 		decision_end_.push_back(model.decision_layer_end(l));
@@ -401,12 +431,24 @@ fznso::Status Z3Solver::run(const fznso::Model& model, fznso::SolutionSink& solu
 
 	// Everything a *run* adds — the objective, its side conditions, and the
 	// blocking clauses of an enumeration — goes in one scope of its own, so that
-	// none of it leaks into the layer state the next run reuses.
-	engine_push();
+	// none of it leaks into the layer state the next run reuses. Those are the
+	// only two things that add anything, so a satisfaction run that wants one
+	// solution gets no scope at all: an assertion level is not free here, because
+	// opening one is what tells Z3 the problem is incremental, and a single-layer
+	// model would otherwise lose its base level to an empty scope.
+	const bool run_scope = have_objective_ || options_.all_solutions;
+	if (run_scope) {
+		engine_push();
+	}
 	struct PopGuard {
 		Z3Solver& self;
-		~PopGuard() { self.engine_pop(); }
-	} guard{*this};
+		bool armed;
+		~PopGuard() {
+			if (armed) {
+				self.engine_pop();
+			}
+		}
+	} guard{*this, run_scope};
 
 	auto solve_started = std::chrono::steady_clock::now();
 	bool stopped = false;
