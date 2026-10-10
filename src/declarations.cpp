@@ -168,13 +168,6 @@ Declarations::Declarations() {
 	add_reified("int_table", {kAVI, kAI});
 	add_reified("bool_table", {kAVB, kAB});
 
-	// `int_span` is deliberately absent, though it has no decomposition either.
-	// Its definition takes the minimum and maximum "over the present sub-tasks
-	// only" — `start_i != _|_` — but the arguments it is declared with carry no
-	// `opt` flag, so there is no way to tell a present task from an absent one
-	// through the interface. Nothing in MiniZinc lowers to it yet, so guessing
-	// costs more than it could possibly buy.
-
 	constraints_.reserve(names_.size());
 	for (std::size_t i = 0; i < names_.size(); i++) {
 		const std::vector<FznsoType>& a = arguments_[i];

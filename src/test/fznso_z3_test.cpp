@@ -570,12 +570,6 @@ void abort_coverage(fznso::Library& lib, const char* stdlib) {
 		// different type rather than a narrowing of it, and neither encoding has
 		// a genuine float power.
 		"float_pow",
-		// Optional-task scheduling: needs introduced variables, which is library
-		// work rather than a formula.
-		"int_alternative", "int_alternative_reif",
-		// Its extrema range over the *present* sub-tasks, and the arguments it
-		// is declared with carry no `opt` flag to tell one from another.
-		"int_span",
 	};
 
 	std::set<std::string> declared;

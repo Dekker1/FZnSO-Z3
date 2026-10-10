@@ -278,12 +278,6 @@ this table, so it cannot rot:
 | `float_sqrt` | declared; see above |
 | 16 float transcendentals | **not supported.** `float_exp`, `float_ln`, the trig family: primitives with no theory in Z3 and no decomposition anywhere. There is nothing to write, and a MIP backend is in the same position |
 | `float_pow` | **not supported.** The registry types its exponent `var float`; an integer exponent is a different type rather than a narrowing of one, and a genuine float power exists only over the reals and not at all over FloatingPoint, so one declaration cannot serve both encodings honestly |
-| `int_alternative` (+`_reif`) | **not supported.** Optional-task scheduling needs introduced variables, which is library work |
-
-`int_span` is undeclared for a different reason: it has no decomposition either,
-but its extrema range over the *present* sub-tasks and the arguments it is
-declared with carry no `opt` flag, so there is no way to tell a present task
-from an absent one through the interface. Nothing in MiniZinc lowers to it yet.
 
 Everything else — `int_nvalue`, the `int_global_cardinality` family,
 `int_inverse`, the rest of scheduling, the whole graph family, every set
