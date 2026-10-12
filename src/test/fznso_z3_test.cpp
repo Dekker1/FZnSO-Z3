@@ -579,10 +579,15 @@ void abort_coverage(fznso::Library& lib, const char* stdlib) {
 		declared.insert(std::string{id.ptr, id.len});
 	}
 	std::set<std::string> shadowed;
-	for (const fs::directory_entry& e : fs::directory_iterator{root / "fznso_nosets"}) {
-		std::string name = e.path().stem().string();
-		if (name.rfind("fzn_", 0) == 0) {
-			shadowed.insert(name.substr(4));
+	for (const fs::path& lib : {root / "fznso_nosets", fs::path{FZNSO_Z3_MZNLIB}}) {
+		if (!fs::is_directory(lib)) {
+			continue;
+		}
+		for (const fs::directory_entry& e : fs::directory_iterator{lib}) {
+			std::string name = e.path().stem().string();
+			if (name.rfind("fzn_", 0) == 0) {
+				shadowed.insert(name.substr(4));
+			}
 		}
 	}
 

@@ -505,14 +505,13 @@ z3::expr Translate::formula(std::string_view ident, const fznso::Model& model,
 		return defined && (ident == "int_div" ? int_arg(arg(2)) == quotient
 		                                      : int_arg(arg(2)) == a - b * quotient);
 	}
-	if (ident == "int_pow") {
+	if (ident == "z3_int_pow") {
 		want(3);
 		z3::expr a = int_arg(arg(0));
 		std::int64_t e = int_par(arg(1));
 		if (e < 0) {
-			// Declared narrowed to a parameter exponent, and a negative one has
-			// no integer answer except for a base of 1 or -1. Refusing is
-			// better than encoding that special case as if it were arithmetic.
+			// `mznlib/fzn_int_pow.mzn` turns a negative exponent into a division
+			// by the positive power, so one never reaches here.
 			fail(ident, "a negative exponent has no integer power");
 		}
 		z3::expr power = ctx_.int_val(1);

@@ -274,7 +274,7 @@ this table, so it cannot rot:
 | --- | --- |
 | 17 `set_of_int_*` | shadowed by `fznso_nosets/`, which is on the include path because this solver declares no set decision type |
 | ~48 int / bool / float primitives | declared natively, plus every `_reif` and `_imp` among them |
-| `int_pow` | declared narrowed to a parameter exponent, which is what `redefinitions-2.2.1.mzn` actually emits |
+| `int_pow` | declared as the extension `z3_int_pow`, for a non-negative parameter exponent. `mznlib/fzn_int_pow.mzn` states the registry constraint in terms of it |
 | `float_sqrt` | declared; see above |
 | 16 float transcendentals | **not supported.** `float_exp`, `float_ln`, the trig family: primitives with no theory in Z3 and no decomposition anywhere. There is nothing to write, and a MIP backend is in the same position |
 | `float_pow` | **not supported.** The registry types its exponent `var float`; an integer exponent is a different type rather than a narrowing of one, and a genuine float power exists only over the reals and not at all over FloatingPoint, so one declaration cannot serve both encodings honestly |
@@ -285,13 +285,22 @@ constraint — decomposes through `fznso_constraints/` and `std`, as it does for
 the MIP backend. Where Z3 has no native form and we have no better
 decomposition, the right answer is to leave the MiniZinc decomposition alone.
 
-## No `mznlib`
+## The `mznlib`
 
-Deliberately. A body in a solver's own MiniZinc library is **not** dropped by
+One file, `fzn_int_pow.mzn`, and nothing goes in without that kind of reason. A
+body in a solver's own MiniZinc library is **not** dropped by
 `enable_native_predicates`, so it is the one place a rewrite loop can hide — and
 a loop does not announce itself, the flattener simply never returns. A
 hand-written decomposition that merely restates the standard library's is pure
 risk for no gain.
+
+`int_pow` is the case that earns one. Z3 decides `c = a^b` over the integers as
+a product of `b` copies of `a`, so only a non-negative parameter exponent is
+theory. The solver declares that much as `z3_int_pow`, and the file splits the
+two cases that are arithmetic instead: a negative exponent is the registry's own
+`c = 1 div pow(a, abs(b))`, and a variable exponent reads the answer off a table
+the exponent indexes. Neither restates a standard library decomposition, because
+`fznso_constraints/fzn_int_pow.mzn` has none to restate: it aborts.
 
 ## What this backend found
 

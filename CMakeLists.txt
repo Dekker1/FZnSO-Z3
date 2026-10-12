@@ -76,6 +76,10 @@ set(FZNSO_MZN_STDLIB "${FZNSO_ROOT}/minizinc_impl/libminizinc/share/minizinc"
 add_executable(fznso-z3-test src/test/fznso_z3_test.cpp)
 target_include_directories(fznso-z3-test PRIVATE "${FZNSO_ROOT}/c" "${FZNSO_ROOT}/cpp")
 target_compile_options(fznso-z3-test PRIVATE -Wall -Wextra)
+# This solver's own library shadows a constraint that has no decomposition, so
+# the coverage check reads that directory too.
+target_compile_definitions(fznso-z3-test
+  PRIVATE "FZNSO_Z3_MZNLIB=\"${CMAKE_CURRENT_SOURCE_DIR}/mznlib\"")
 if(NOT WIN32)
   target_link_libraries(fznso-z3-test PRIVATE ${CMAKE_DL_LIBS})
 endif()

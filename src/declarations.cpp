@@ -59,11 +59,12 @@ Declarations::Declarations() {
 	add("int_times", {kVI, kVI, kVI});
 	add("int_div", {kVI, kVI, kVI});
 	add("int_mod", {kVI, kVI, kVI});
-	// Narrowed to a parameter exponent: a variable exponent is not something Z3
-	// decides over the integers. `redefinitions-2.2.1.mzn` routes `int_pow_fixed`
-	// onto this name, so the narrowed form is what MiniZinc actually emits, and
-	// `add_fixed_form` generates the dispatch for the rest.
-	add("int_pow", {kVI, kI, kVI});
+	// An extension rather than `int_pow` itself: Z3 decides the power only for a
+	// non-negative parameter exponent, which is the product of that many copies
+	// of the base. `mznlib/fzn_int_pow.mzn` states the registry constraint in
+	// terms of this one and handles the two cases that are arithmetic rather
+	// than theory.
+	add("z3_int_pow", {kVI, kI, kVI});
 	add("int_to_float", {kVI, kVF});
 
 	// --- Booleans -----------------------------------------------------------
